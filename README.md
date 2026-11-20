@@ -6,6 +6,7 @@ Students only open a web page and plug in the Arduino. No Arduino IDE, Python, O
 * Works in **Google Chrome or Microsoft Edge** on Windows, macOS, Linux or ChromeOS laptops/desktops.
 * Not supported: phones/tablets, Safari, Firefox (they have no Web Serial).
 * The camera picture never leaves the computer. Eye tracking runs inside the page (MediaPipe).
+* **Complete System & Electronics Documentation:** See the [Eye Control Technical Manual (PDF)](Eye_Control_Technical_Documentation.pdf) for schematics, signal mathematics, PWM timing, and circuit design.
 
 ## For the teacher – one-time setup
 
