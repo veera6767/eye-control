@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eye Control – move a servo with your eyes</title>
+<meta name="description" content="Control a servo motor with your eye movements. Works in Chrome or Edge, no install needed.">
+<style>
+  :root {
+    --bg: #f4f7f9; --card: #ffffff; --ink: #14213d; --muted: #5b6b7f;
+    --brand: #0f766e; --brand-dark: #0b5a54; --line: #dbe3ea;
+    --ok: #15803d; --warn: #b45309; --bad: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1720; --card: #17212c; --ink: #e8eef5; --muted: #9fb0c3; --line: #2a3745;
+            --brand: #2dd4bf; --brand-dark: #14b8a6; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--ink); line-height: 1.45; }
+  header { padding: 28px 20px 8px; max-width: 1100px; margin: 0 auto; }
+  header h1 { margin: 0 0 4px; font-size: 1.9rem; }
+  header p { margin: 0; color: var(--muted); }
+  main { max-width: 1100px; margin: 0 auto; padding: 12px 20px 40px;
+         display: grid; grid-template-columns: 360px 1fr; gap: 18px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin-bottom: 14px; }
+  .card h2 { margin: 0 0 6px; font-size: 1.05rem; }
+  .card p { margin: 4px 0 10px; color: var(--muted); font-size: 0.93rem; }
+  .step { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+          background: var(--brand); color: #fff; font-size: 0.8rem; margin-right: 8px; }
+  button { font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--line);
+           background: var(--card); color: var(--ink); padding: 9px 14px; }
+  button:hover:not(:disabled) { border-color: var(--brand); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.big { background: var(--brand); color: #fff; border-color: var(--brand); font-weight: 600;
+               padding: 12px 18px; font-size: 1rem; }
+  @media (prefers-color-scheme: dark) { button.big { color: #04211e; } }
+  button.big:hover:not(:disabled) { background: var(--brand-dark); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.82rem; border: 1px solid var(--line); }
+  .pill.off { color: var(--muted); }
+  .pill.on { color: var(--ok); border-color: var(--ok); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); }
+  .banner { max-width: 1100px; margin: 10px auto 0; padding: 12px 16px; border-radius: 10px; border: 1px solid; }
+  .banner.error { color: var(--bad); border-color: var(--bad); background: rgba(185,28,28,.08); margin-left: 20px; margin-right: 20px; }
+  @media (min-width: 1140px) { .banner.error { margin-left: auto; margin-right: auto; } }
+  .stage { position: relative; background: #000; border-radius: 14px; overflow: hidden; aspect-ratio: 4 / 3; }
+  .stage video, .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+  #stageMsg { position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 14px; color: #fff; font-weight: 600;
+              background: linear-gradient(transparent, rgba(0,0,0,.75)); text-align: center; min-height: 44px; }
+  #stageIdle { position: absolute; inset: 0; display: grid; place-items: center; color: #9fb0c3; text-align: center; padding: 20px; }
+  .readout { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: center; }
+  #dial { width: 100%; max-width: 280px; }
+  .big-num { font-size: 2.2rem; font-weight: 700; line-height: 1; }
+  .small { font-size: 0.85rem; color: var(--muted); }
+  label.field { display: block; margin: 8px 0; font-size: 0.93rem; }
+  input[type=range] { width: 100%; }
+  #message { margin: 8px 0 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); display: none; font-size: 0.93rem; }
+  #message.info { display: block; }
+  #message.warn { display: block; color: var(--warn); border-color: var(--warn); }
+  #message.error { display: block; color: var(--bad); border-color: var(--bad); }
+  #message.ok { display: block; color: var(--ok); border-color: var(--ok); }
+  details { margin-top: 6px; }
+  details summary { cursor: pointer; font-weight: 600; }
+  details ul, details ol { margin: 6px 0 6px 20px; padding: 0; color: var(--muted); font-size: 0.93rem; }
+  code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 5px; font-size: 0.9em; }
+  footer { max-width: 1100px; margin: 0 auto; padding: 0 20px 30px; color: var(--muted); font-size: 0.82rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Eye Control</h1>
+  <p>Move a servo motor just by looking left and right. Nothing to install.</p>
+</header>
+
+<div id="unsupported" class="banner error" hidden>
+  <strong>This browser can't talk to the Arduino.</strong>
+  Please open this page in <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong> on a laptop or desktop computer.
+  (Phones, Safari and Firefox are not supported.) You can still try the camera in demo mode.
+</div>
+
+<main>
+  <div>
+    <section class="card">
+      <h2><span class="step">1</span>Connect the Arduino</h2>
+      <p>Plug the Arduino into a USB port, click the button, then choose it from the list and press <b>Connect</b>.</p>
+      <div class="row">
+        <button id="btnConnect" class="big">Connect Arduino</button>
+        <span id="serialStatus" class="pill off">Not connected</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">2</span>Start the camera</h2>
+      <p>Allow the camera when your browser asks. Sit about an arm's length from the screen with your face well lit.</p>
+      <div class="row">
+        <button id="btnCamera" class="big">Start camera</button>
+        <span id="cameraStatus" class="pill off">Camera off</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">3</span>Calibrate (7 seconds)</h2>
+      <p>Press the button, then follow the instructions on the camera picture: look fully to your <b>left</b>, then fully to your <b>right</b>. Keep your head still and move only your eyes.</p>
+      <div class="row">
+        <button id="btnCalibrate" class="big" disabled>Calibrate</button>
+        <button id="btnReset" disabled>Reset</button>
+      </div>
+      <p class="small" id="calibText">Using default settings.</p>
+    </section>
+
+    <section class="card">
+      <h2>Settings</h2>
+      <label class="field"><input type="checkbox" id="chkFlip" checked> Reverse direction</label>
+      <label class="field">Servo turn: ±<span id="rangeVal">30</span>°
+        <input type="range" id="rngRange" min="10" max="30" step="1" value="30"></label>
+      <p class="small" style="margin-bottom:6px">Test the servo (pauses the eye tracking for 2 seconds):</p>
+      <div class="row">
+        <button id="btnTestLeft" disabled>Servo left</button>
+        <button id="btnTestCenter" disabled>Centre</button>
+        <button id="btnTestRight" disabled>Servo right</button>
+      </div>
+    </section>
+  </div>
+
+  <div>
+    <section class="card">
+      <div class="stage">
+        <video id="video" playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div id="stageIdle">The camera picture will appear here.<br>Press “Start camera”.</div>
+        <div id="stageMsg"></div>
+      </div>
+      <div id="message"></div>
+    </section>
+
+    <section class="card">
+      <div class="readout">
+        <svg id="dial" viewBox="0 0 200 120" role="img" aria-label="Servo angle dial">
+          <path d="M20 100 A80 80 0 0 1 180 100" fill="none" stroke="#9fb0c3" stroke-opacity=".5" stroke-width="10" stroke-linecap="round"/>
+          <line id="needle" x1="100" y1="100" x2="100" y2="32" stroke="#0f766e" stroke-width="5" stroke-linecap="round" transform="rotate(0 100 100)"/>
+          <circle cx="100" cy="100" r="7" fill="#0f766e"/>
+        </svg>
+        <div>
+          <div class="small">Servo angle</div>
+          <div class="big-num"><span id="angleText">90</span>°</div>
+          <div class="small" style="margin-top:8px">Eye position: <span id="ratioText">–</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <details>
+        <summary>Teacher: one-time setup</summary>
+        <ol>
+          <li>Upload <code>arduino/eye_servo/eye_servo.ino</code> to the Arduino Uno/Nano once, using the Arduino IDE.</li>
+          <li>Wire the servo: signal → pin <b>D9</b>, red → external 5&nbsp;V supply (+), brown → supply GND <b>and</b> Arduino GND.</li>
+          <li>Students then only plug in the USB cable and use this page. They never need the Arduino IDE.</li>
+        </ol>
+      </details>
+      <details>
+        <summary>Something not working?</summary>
+        <ul>
+          <li><b>No Arduino in the list:</b> try another USB cable (some only charge) or another port. Clone boards may need the CH340 driver.</li>
+          <li><b>“Failed to open serial port”:</b> close the Arduino IDE Serial Monitor and any other program using the Arduino.</li>
+          <li><b>Servo moves the wrong way:</b> tick or untick “Reverse direction”.</li>
+          <li><b>Servo twitches or the Arduino keeps disconnecting:</b> power the servo from a separate battery pack or supply, with the grounds joined.</li>
+          <li><b>“No face found”:</b> face the camera, add more light, and remove glare from glasses if you can.</li>
+        </ul>
+      </details>
+    </section>
+  </div>
+</main>
+
+<footer>
+  Camera video never leaves your computer: the eye tracking runs inside this page.
+  Eye tracking by MediaPipe (Apache-2.0).
+</footer>
+
+<script src="mediapipe/face_mesh.js" crossorigin="anonymous"></script>
+<script src="logic.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
