@@ -1,5 +1,5 @@
 /* Optional offline cache: after the first visit the page also works without internet. */
-const CACHE = "eye-control-v1";
+const CACHE = "eye-control-v2";
 const CORE = ["./", "index.html", "app.js", "logic.js"];
 
 self.addEventListener("install", (event) => {

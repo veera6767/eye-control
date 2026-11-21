@@ -1,7 +1,7 @@
 /*
  * Eye Control web app.
- * Webcam -> MediaPipe FaceMesh (runs in the browser) -> angle -> Web Serial -> Arduino.
- * The Arduino runs arduino/eye_servo/eye_servo.ino, which reads one angle per line.
+ * Webcam -> MediaPipe FaceMesh (in the browser) -> side + up/down angles -> Web Serial -> Arduino.
+ * The Arduino runs arduino/eye_servo/eye_servo.ino, which reads "pan,tilt" (or just "pan") per line.
  */
 (function () {
   "use strict";
@@ -9,66 +9,82 @@
   var L = window.EyeLogic;
   function $(id) { return document.getElementById(id); }
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
 
   var BAUD = 9600;
-  var SMOOTH = 0.35;          // 0..1, lower = smoother but slower
-  var KEEPALIVE_MS = 500;     // resend angle so the Arduino's 2 s timeout never fires
-  var SETTINGS_KEY = "eyeControlSettings.v1";
+  var SMOOTH_H = 0.35, SMOOTH_V = 0.30;   // 0..1, lower = smoother but slower
+  var KEEPALIVE_MS = 500;                 // resend so the Arduino's 2 s timeout never fires
+  var CLOSED_EAR = 0.15;                  // eye openness below this = eye closed
+  var DEAD_V = 0.05, WEAK_KEEP = 0.30;    // up/down dead zone, calming of the weaker axis
+  var SETTINGS_KEY = "eyeControlSettings.v2";
   var encoder = new TextEncoder();
+  var STEPS = [
+    { key: "low", axis: "h", label: "LEFT" }, { key: "high", axis: "h", label: "RIGHT" },
+    { key: "vUp", axis: "v", label: "UP" }, { key: "vDown", axis: "v", label: "DOWN" },
+  ];
+  var MODE_HINT = {
+    auto: "Both eyes closed – holding position", both: "Both eyes must be open",
+    left: "Open your LEFT eye", right: "Open your RIGHT eye",
+  };
 
   var state = {
     port: null, writer: null, serialReady: false,
-    stream: null, running: false, faceMesh: null, busy: false,
-    ratioS: 0.5, haveRatio: false,
-    low: 0.40, high: 0.60, flip: true, range: L.MAX_RANGE, calibrated: false,
-    lastSent: null, lastSentAt: 0, holdUntil: 0, holdAngle: L.CENTER, holdTimer: null,
-    calib: null,
+    stream: null, running: false, faceMesh: null, busy: false, aspect: 0.75,
+    hS: 0, vS: 0, haveSig: false,
+    low: 0.40, high: 0.60, vUp: -0.02, vDown: 0.12, calibrated: false,
+    flip: true, flipTilt: true, useTilt: true, eyeMode: "auto", vGain: 1.5,
+    range: L.MAX_RANGE, tiltRange: L.MAX_TILT,
+    pan: L.CENTER, tilt: L.CENTER, lastMsg: null, lastSentAt: 0,
+    holdUntil: 0, holdTimer: null, calib: null,
   };
+  var SAVED = ["low", "high", "vUp", "vDown", "calibrated", "flip", "flipTilt", "useTilt",
+               "eyeMode", "vGain", "range", "tiltRange"];
 
   // ---------- saved settings ----------
   function loadSettings() {
     try {
       var s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
-      if (s && typeof s.low === "number" && typeof s.high === "number") {
-        state.low = s.low; state.high = s.high; state.calibrated = !!s.calibrated;
-        if (typeof s.flip === "boolean") state.flip = s.flip;
-        if (typeof s.range === "number") state.range = Math.max(10, Math.min(L.MAX_RANGE, s.range));
-      }
+      if (!s) return;
+      SAVED.forEach(function (k) { if (typeof s[k] === typeof state[k]) state[k] = s[k]; });
+      state.range = clamp(state.range, 10, L.MAX_RANGE);
+      state.tiltRange = clamp(state.tiltRange, 10, L.MAX_TILT);
+      if (["auto", "both", "left", "right"].indexOf(state.eyeMode) < 0) state.eyeMode = "auto";
     } catch (e) { /* storage may be blocked; that is fine */ }
   }
   function saveSettings() {
     try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-        low: state.low, high: state.high, flip: state.flip, range: state.range, calibrated: state.calibrated,
-      }));
+      var o = {}; SAVED.forEach(function (k) { o[k] = state[k]; });
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(o));
     } catch (e) { /* ignore */ }
   }
 
   // ---------- small UI helpers ----------
-  function setPill(id, text, cls) {
-    var el = $(id); el.textContent = text; el.className = "pill " + cls;
-  }
+  function setPill(id, text, cls) { var el = $(id); el.textContent = text; el.className = "pill " + cls; }
   function showMsg(text, kind) {
     var el = $("message");
     if (!text) { el.className = ""; el.textContent = ""; return; }
     el.textContent = text; el.className = kind || "info";
   }
   function setStage(text) { $("stageMsg").textContent = text || ""; }
-  function updateDial(angle) {
-    $("angleText").textContent = angle;
-    $("needle").setAttribute("transform", "rotate(" + ((angle - L.CENTER) * 2) + " 100 100)");
+  function updateDials(pan, tilt) {
+    $("angleText").textContent = pan; $("tiltText").textContent = tilt;
+    $("needleP").setAttribute("transform", "rotate(" + ((pan - L.CENTER) * 2) + " 100 100)");
+    $("needleT").setAttribute("transform", "rotate(" + ((tilt - L.CENTER) * 2) + " 100 100)");
   }
   function updateCalibText() {
     $("calibText").textContent = state.calibrated
-      ? "Calibrated (left " + state.low.toFixed(2) + ", right " + state.high.toFixed(2) + ")."
+      ? "Calibrated (side " + state.low.toFixed(2) + " to " + state.high.toFixed(2) +
+        "; up/down " + state.vUp.toFixed(2) + " to " + state.vDown.toFixed(2) + ")."
       : "Using default settings. Calibrating makes it work better for your eyes.";
   }
   function updateButtons() {
     var ser = state.serialReady;
-    $("btnTestLeft").disabled = !ser; $("btnTestCenter").disabled = !ser; $("btnTestRight").disabled = !ser;
+    ["btnTestLeft", "btnTestCenter", "btnTestRight"].forEach(function (id) { $(id).disabled = !ser; });
+    ["btnTestUp", "btnTestTiltCenter", "btnTestDown"].forEach(function (id) { $(id).disabled = !(ser && state.useTilt); });
     $("btnCalibrate").disabled = !state.running; $("btnReset").disabled = !state.running && !state.calibrated;
     $("btnConnect").textContent = ser ? "Disconnect" : "Connect Arduino";
   }
+  function centreMsg() { return state.useTilt ? L.CENTER + "," + L.CENTER : String(L.CENTER); }
 
   // ---------- Arduino over Web Serial ----------
   async function connectSerial() {
@@ -88,7 +104,7 @@
       state.serialReady = true;
       setPill("serialStatus", "Connected", "on");
       showMsg("", "");
-      sendAngle(L.CENTER, true);
+      sendPose(L.CENTER, L.CENTER, true);
     } catch (e) {
       cleanupSerial();
       if (e && e.name === "NotFoundError") {      // user closed the picker
@@ -105,15 +121,15 @@
 
   function cleanupSerial() {
     var w = state.writer, p = state.port;
-    state.writer = null; state.port = null; state.serialReady = false; state.lastSent = null;
+    state.writer = null; state.port = null; state.serialReady = false; state.lastMsg = null;
     try { if (w) w.releaseLock(); } catch (e) { /* ignore */ }
     try { if (p) p.close().catch(function () {}); } catch (e) { /* ignore */ }
   }
 
   async function disconnectSerial() {
-    try { if (state.writer) await state.writer.write(encoder.encode(L.CENTER + "\n")); } catch (e) { /* ignore */ }
+    try { if (state.writer) await state.writer.write(encoder.encode(centreMsg() + "\n")); } catch (e) { /* ignore */ }
     var w = state.writer, p = state.port;
-    state.writer = null; state.port = null; state.serialReady = false; state.lastSent = null;
+    state.writer = null; state.port = null; state.serialReady = false; state.lastMsg = null;
     try { if (w) w.releaseLock(); } catch (e) { /* ignore */ }
     try { if (p) await p.close(); } catch (e) { /* ignore */ }
     setPill("serialStatus", "Not connected", "off");
@@ -128,24 +144,26 @@
     updateButtons();
   }
 
-  function sendAngle(angle, force) {
-    updateDial(angle);
+  // Sends "pan,tilt" (or just "pan" when the up/down servo is switched off).
+  function sendPose(pan, tilt, force) {
+    state.pan = pan; state.tilt = tilt;
+    updateDials(pan, tilt);
     if (!state.serialReady || !state.writer) return;
+    var msg = state.useTilt ? pan + "," + tilt : String(pan);
     var now = Date.now();
-    if (!force && angle === state.lastSent && now - state.lastSentAt < KEEPALIVE_MS) return;
-    state.lastSent = angle; state.lastSentAt = now;
-    state.writer.write(encoder.encode(angle + "\n")).catch(onSerialLost);
+    if (!force && msg === state.lastMsg && now - state.lastSentAt < KEEPALIVE_MS) return;
+    state.lastMsg = msg; state.lastSentAt = now;
+    state.writer.write(encoder.encode(msg + "\n")).catch(onSerialLost);
   }
 
-  function testServo(angle) {
-    // Pause eye tracking for 2 s and keep resending the test angle so the Arduino holds it.
+  function testPose(pan, tilt) {
+    // Pause eye tracking for 2 s and keep resending the test pose so the Arduino holds it.
     state.holdUntil = Date.now() + 2000;
-    state.holdAngle = angle;
-    sendAngle(angle, true);
+    sendPose(pan, tilt, true);
     if (state.holdTimer) clearInterval(state.holdTimer);
     state.holdTimer = setInterval(function () {
       if (Date.now() >= state.holdUntil) { clearInterval(state.holdTimer); state.holdTimer = null; return; }
-      sendAngle(state.holdAngle, false);
+      sendPose(pan, tilt, false);
     }, 250);
   }
 
@@ -169,6 +187,7 @@
       await video.play();
       var overlay = $("overlay");
       overlay.width = video.videoWidth || 640; overlay.height = video.videoHeight || 480;
+      state.aspect = overlay.height / overlay.width;
       $("stageIdle").style.display = "none";
 
       if (!state.faceMesh) {
@@ -180,7 +199,7 @@
         await fm.initialize();
         state.faceMesh = fm;
       }
-      state.running = true; state.haveRatio = false;
+      state.running = true; state.haveSig = false;
       $("btnCamera").textContent = "Stop camera";
       setPill("cameraStatus", "Camera on", "on");
       setStage("Looking for your face…");
@@ -218,8 +237,8 @@
     setStage("");
     $("btnCamera").textContent = "Start camera";
     setPill("cameraStatus", "Camera off", "off");
-    sendAngle(L.CENTER, true);
-    $("ratioText").textContent = "–";
+    sendPose(L.CENTER, L.CENTER, true);
+    $("ratioText").textContent = "–"; $("eyesText").textContent = "–";
     updateButtons();
   }
 
@@ -257,74 +276,106 @@
     var lm = faces[0];
     drawIris(lm);
 
-    var ratio = L.eyeRatio(lm);
-    state.ratioS = state.haveRatio ? L.smooth(state.ratioS, ratio, SMOOTH) : ratio;
-    state.haveRatio = true;
-    $("ratioText").textContent = state.ratioS.toFixed(2);
+    var m = L.measure(lm, state.eyeMode, state.aspect, CLOSED_EAR);
+    $("eyesText").textContent = "L " + (m.oL > CLOSED_EAR ? "open" : "closed") + " " + m.oL.toFixed(2) +
+                                " · R " + (m.oR > CLOSED_EAR ? "open" : "closed") + " " + m.oR.toFixed(2);
+    if (m.n) {                                    // only learn from open eyes (blinks are ignored)
+      state.hS = state.haveSig ? L.smooth(state.hS, m.h, SMOOTH_H) : m.h;
+      state.vS = state.haveSig ? L.smooth(state.vS, m.v, SMOOTH_V) : m.v;
+      state.haveSig = true;
+    }
+    $("ratioText").textContent = state.haveSig
+      ? state.hS.toFixed(2) + (state.useTilt ? " / " + state.vS.toFixed(2) : "") : "–";
 
-    if (state.calib) { tickCalibration(state.ratioS); return; }
-
+    if (state.calib) { tickCalibration(m); return; }
     if (Date.now() < state.holdUntil) return;      // a servo test is running
-    var angle = L.ratioToAngle(state.ratioS, state.low, state.high, state.range, state.flip);
-    setStage("Looking good – move your eyes left and right");
-    sendAngle(angle, false);
+    if (!state.haveSig) { setStage(MODE_HINT[state.eyeMode]); return; }
+    if (!m.n) { setStage(MODE_HINT[state.eyeMode]); sendPose(state.pan, state.tilt, false); return; }
+
+    var nh = L.norm(state.hS, state.low, state.high, 1, 0), nv = 0;
+    if (state.useTilt) {
+      nv = L.norm(state.vS, state.vUp, state.vDown, state.vGain, DEAD_V);
+      var r = L.suppress(nh, nv, WEAK_KEEP); nh = r[0]; nv = r[1];
+    }
+    setStage("Looking good – move your eyes");
+    sendPose(L.toAngle(nh, state.range, state.flip),
+             state.useTilt ? L.toAngle(nv, state.tiltRange, state.flipTilt) : L.CENTER, false);
   }
 
-  // ---------- calibration wizard ----------
+  // ---------- calibration wizard: left, right, (up, down) ----------
   var COUNTDOWN_MS = 2000, SAMPLE_MS = 1500;
 
   function startCalibration() {
     if (!state.running) { showMsg("Start the camera first.", "warn"); return; }
     showMsg("", "");
-    state.calib = { step: "left", t0: performance.now(), samples: [], left: null };
+    state.calib = { i: 0, steps: state.useTilt ? STEPS : STEPS.slice(0, 2), t0: performance.now(), samples: [], res: {} };
   }
 
-  function tickCalibration(ratioOrNull) {
+  function tickCalibration(m) {
     var c = state.calib; if (!c) return;
-    var el = performance.now() - c.t0;
-    var side = c.step === "left" ? "LEFT" : "RIGHT";
+    var s = c.steps[c.i], el = performance.now() - c.t0;
     if (el < COUNTDOWN_MS) {
-      setStage("Look fully to your " + side + " and hold… " + Math.ceil((COUNTDOWN_MS - el) / 1000));
+      setStage("Look fully " + s.label + " and hold… " + Math.ceil((COUNTDOWN_MS - el) / 1000));
       return;
     }
     if (el < COUNTDOWN_MS + SAMPLE_MS) {
       setStage("Hold still…");
-      if (ratioOrNull !== null) c.samples.push(ratioOrNull);
+      if (m && m.n) c.samples.push(s.axis === "h" ? m.h : m.v);
       return;
     }
     var avg = L.mean(c.samples);
     if (avg === null || c.samples.length < 5) {
       state.calib = null;
-      showMsg("I couldn't see your face during calibration. Face the camera, add light, and try again.", "warn");
+      showMsg("I couldn't see your open eye during calibration. Face the camera, add light, keep the eye you use open, and try again.", "warn");
       return;
     }
-    if (c.step === "left") {
-      state.calib = { step: "right", t0: performance.now(), samples: [], left: avg };
-      return;
-    }
-    var left = c.left, right = avg;
+    c.res[s.key] = avg;
+    if (++c.i < c.steps.length) { c.t0 = performance.now(); c.samples = []; return; }
+
+    var r = c.res;
+    var okH = Math.abs(r.high - r.low) >= 0.04;
+    var okV = !state.useTilt || Math.abs(r.vDown - r.vUp) >= 0.015;
     state.calib = null;
-    if (Math.abs(right - left) < 0.04) {
-      showMsg("Your eye movement was too small to measure. Look further left and right (turn only your eyes) and try again.", "warn");
-      return;
-    }
-    state.low = left; state.high = right; state.calibrated = true;
+    if (okH) { state.low = r.low; state.high = r.high; }
+    if (state.useTilt && okV) { state.vUp = r.vUp; state.vDown = r.vDown; }
+    if (okH || (state.useTilt && okV)) state.calibrated = true;
     saveSettings(); updateCalibText(); updateButtons();
-    showMsg("Calibration done. Now move your eyes left and right.", "ok");
+    if (okH && okV) showMsg("Calibration done. Now move your eyes.", "ok");
+    else showMsg((okH ? "" : "Side movement was too small – look further left and right. ") +
+                 (okV ? "" : "Up/down movement was too small – look further up and down. ") +
+                 "Turn only your eyes, then calibrate again.", "warn");
   }
 
   function resetCalibration() {
-    state.low = 0.40; state.high = 0.60; state.calibrated = false; state.calib = null;
+    state.low = 0.40; state.high = 0.60; state.vUp = -0.02; state.vDown = 0.12;
+    state.calibrated = false; state.calib = null;
     saveSettings(); updateCalibText(); updateButtons();
     showMsg("Calibration reset to the default settings.", "info");
   }
 
   // ---------- start-up ----------
+  function bindCheck(id, key) {
+    $(id).checked = state[key];
+    $(id).addEventListener("change", function (e) { state[key] = e.target.checked; saveSettings(); updateButtons(); });
+  }
+  function bindRange(id, valId, key) {
+    $(id).value = state[key]; $(valId).textContent = state[key];
+    $(id).addEventListener("input", function (e) {
+      state[key] = Number(e.target.value); $(valId).textContent = state[key]; saveSettings();
+    });
+  }
+
   function init() {
     loadSettings();
-    $("chkFlip").checked = state.flip;
-    $("rngRange").value = state.range; $("rangeVal").textContent = state.range;
-    updateCalibText(); updateDial(L.CENTER); updateButtons();
+    bindCheck("chkFlip", "flip"); bindCheck("chkFlipTilt", "flipTilt"); bindCheck("chkTilt", "useTilt");
+    bindRange("rngRange", "rangeVal", "range"); bindRange("rngTilt", "tiltVal", "tiltRange");
+    bindRange("rngGain", "gainVal", "vGain");
+    $("selEyeMode").value = state.eyeMode;
+    $("selEyeMode").addEventListener("change", function (e) {
+      state.eyeMode = e.target.value; saveSettings();
+      showMsg("Eye mode changed. For best results press Calibrate again, using the eye(s) you will control with.", "info");
+    });
+    updateCalibText(); updateDials(L.CENTER, L.CENTER); updateButtons();
 
     if (!("serial" in navigator)) {
       $("unsupported").hidden = false;
@@ -336,13 +387,13 @@
     $("btnCamera").addEventListener("click", startCamera);
     $("btnCalibrate").addEventListener("click", startCalibration);
     $("btnReset").addEventListener("click", resetCalibration);
-    $("chkFlip").addEventListener("change", function (e) { state.flip = e.target.checked; saveSettings(); });
-    $("rngRange").addEventListener("input", function (e) {
-      state.range = Number(e.target.value); $("rangeVal").textContent = state.range; saveSettings();
-    });
-    $("btnTestLeft").addEventListener("click", function () { testServo(L.CENTER - state.range); });
-    $("btnTestCenter").addEventListener("click", function () { testServo(L.CENTER); });
-    $("btnTestRight").addEventListener("click", function () { testServo(L.CENTER + state.range); });
+    $("btnTestLeft").addEventListener("click", function () { testPose(L.CENTER - state.range, L.CENTER); });
+    $("btnTestCenter").addEventListener("click", function () { testPose(L.CENTER, L.CENTER); });
+    $("btnTestRight").addEventListener("click", function () { testPose(L.CENTER + state.range, L.CENTER); });
+    // "Up" / "Down" = the angle the servo gets when YOU look up / down (follows "Reverse up/down").
+    $("btnTestUp").addEventListener("click", function () { testPose(L.CENTER, L.toAngle(-1, state.tiltRange, state.flipTilt)); });
+    $("btnTestTiltCenter").addEventListener("click", function () { testPose(L.CENTER, L.CENTER); });
+    $("btnTestDown").addEventListener("click", function () { testPose(L.CENTER, L.toAngle(1, state.tiltRange, state.flipTilt)); });
 
     // Let the page work offline after the first visit (needs https or localhost).
     if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {

@@ -52,7 +52,9 @@
               background: linear-gradient(transparent, rgba(0,0,0,.75)); text-align: center; min-height: 44px; }
   #stageIdle { position: absolute; inset: 0; display: grid; place-items: center; color: #9fb0c3; text-align: center; padding: 20px; }
   .readout { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: center; }
-  #dial { width: 100%; max-width: 280px; }
+  .dial { width: 100%; max-width: 240px; }
+  .dials { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end; }
+  select { font: inherit; width: 100%; margin-top: 4px; padding: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
   .big-num { font-size: 2.2rem; font-weight: 700; line-height: 1; }
   .small { font-size: 0.85rem; color: var(--muted); }
   label.field { display: block; margin: 8px 0; font-size: 0.93rem; }
@@ -72,7 +74,7 @@
 <body>
 <header>
   <h1>Eye Control</h1>
-  <p>Move a servo motor just by looking left and right. Nothing to install.</p>
+  <p>Move two servo motors just by looking left, right, up and down. Nothing to install.</p>
 </header>
 
 <div id="unsupported" class="banner error" hidden>
@@ -102,8 +104,8 @@
     </section>
 
     <section class="card">
-      <h2><span class="step">3</span>Calibrate (7 seconds)</h2>
-      <p>Press the button, then follow the instructions on the camera picture: look fully to your <b>left</b>, then fully to your <b>right</b>. Keep your head still and move only your eyes.</p>
+      <h2><span class="step">3</span>Calibrate (about 14 seconds)</h2>
+      <p>Press the button, then follow the instructions on the camera picture: look fully to your <b>left</b>, <b>right</b>, <b>up</b> and then <b>down</b>. Keep your head still and move only your eyes.</p>
       <div class="row">
         <button id="btnCalibrate" class="big" disabled>Calibrate</button>
         <button id="btnReset" disabled>Reset</button>
@@ -113,14 +115,32 @@
 
     <section class="card">
       <h2>Settings</h2>
-      <label class="field"><input type="checkbox" id="chkFlip" checked> Reverse direction</label>
-      <label class="field">Servo turn: ±<span id="rangeVal">30</span>°
+      <label class="field">Eyes used
+        <select id="selEyeMode">
+          <option value="auto">Auto – close one eye and the open eye controls</option>
+          <option value="both">Both eyes (pauses if one is closed)</option>
+          <option value="left">Left eye only (close your right eye)</option>
+          <option value="right">Right eye only (close your left eye)</option>
+        </select></label>
+      <label class="field"><input type="checkbox" id="chkTilt" checked> Use the up/down servo (second servo on D10)</label>
+      <label class="field"><input type="checkbox" id="chkFlip" checked> Reverse side direction</label>
+      <label class="field"><input type="checkbox" id="chkFlipTilt" checked> Reverse up/down direction</label>
+      <label class="field">Side servo turn: ±<span id="rangeVal">30</span>°
         <input type="range" id="rngRange" min="10" max="30" step="1" value="30"></label>
-      <p class="small" style="margin-bottom:6px">Test the servo (pauses the eye tracking for 2 seconds):</p>
+      <label class="field">Up/down servo turn: ±<span id="tiltVal">35</span>°
+        <input type="range" id="rngTilt" min="10" max="35" step="1" value="35"></label>
+      <label class="field">Up/down sensitivity: <span id="gainVal">1.5</span>
+        <input type="range" id="rngGain" min="1" max="3" step="0.1" value="1.5"></label>
+      <p class="small" style="margin-bottom:6px">Test the servos (pauses the eye tracking for 2 seconds):</p>
       <div class="row">
         <button id="btnTestLeft" disabled>Servo left</button>
         <button id="btnTestCenter" disabled>Centre</button>
         <button id="btnTestRight" disabled>Servo right</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnTestUp" disabled>Servo up</button>
+        <button id="btnTestTiltCenter" disabled>Centre</button>
+        <button id="btnTestDown" disabled>Servo down</button>
       </div>
     </section>
   </div>
@@ -137,18 +157,28 @@
     </section>
 
     <section class="card">
-      <div class="readout">
-        <svg id="dial" viewBox="0 0 200 120" role="img" aria-label="Servo angle dial">
-          <path d="M20 100 A80 80 0 0 1 180 100" fill="none" stroke="#9fb0c3" stroke-opacity=".5" stroke-width="10" stroke-linecap="round"/>
-          <line id="needle" x1="100" y1="100" x2="100" y2="32" stroke="#0f766e" stroke-width="5" stroke-linecap="round" transform="rotate(0 100 100)"/>
-          <circle cx="100" cy="100" r="7" fill="#0f766e"/>
-        </svg>
+      <div class="dials">
         <div>
-          <div class="small">Servo angle</div>
+          <svg class="dial" viewBox="0 0 200 120" role="img" aria-label="Side servo angle dial">
+            <path d="M20 100 A80 80 0 0 1 180 100" fill="none" stroke="#9fb0c3" stroke-opacity=".5" stroke-width="10" stroke-linecap="round"/>
+            <line id="needleP" x1="100" y1="100" x2="100" y2="32" stroke="#0f766e" stroke-width="5" stroke-linecap="round" transform="rotate(0 100 100)"/>
+            <circle cx="100" cy="100" r="7" fill="#0f766e"/>
+          </svg>
+          <div class="small">Side servo</div>
           <div class="big-num"><span id="angleText">90</span>°</div>
-          <div class="small" style="margin-top:8px">Eye position: <span id="ratioText">–</span></div>
+        </div>
+        <div>
+          <svg class="dial" viewBox="0 0 200 120" role="img" aria-label="Up/down servo angle dial">
+            <path d="M20 100 A80 80 0 0 1 180 100" fill="none" stroke="#9fb0c3" stroke-opacity=".5" stroke-width="10" stroke-linecap="round"/>
+            <line id="needleT" x1="100" y1="100" x2="100" y2="32" stroke="#0f766e" stroke-width="5" stroke-linecap="round" transform="rotate(0 100 100)"/>
+            <circle cx="100" cy="100" r="7" fill="#0f766e"/>
+          </svg>
+          <div class="small">Up/down servo</div>
+          <div class="big-num"><span id="tiltText">90</span>°</div>
         </div>
       </div>
+      <div class="small" style="margin-top:10px">Eye position (side / up-down): <span id="ratioText">–</span></div>
+      <div class="small">Eyes: <span id="eyesText">–</span></div>
     </section>
 
     <section class="card">
@@ -156,7 +186,7 @@
         <summary>Teacher: one-time setup</summary>
         <ol>
           <li>Upload <code>arduino/eye_servo/eye_servo.ino</code> to the Arduino Uno/Nano once, using the Arduino IDE.</li>
-          <li>Wire the servo: signal → pin <b>D9</b>, red → external 5&nbsp;V supply (+), brown → supply GND <b>and</b> Arduino GND.</li>
+          <li>Wire the servos: side servo signal → pin <b>D9</b>, up/down servo signal → pin <b>D10</b>, both red wires → external 5&nbsp;V supply (+), both brown wires → supply GND <b>and</b> Arduino GND.</li>
           <li>Students then only plug in the USB cable and use this page. They never need the Arduino IDE.</li>
         </ol>
       </details>
@@ -165,7 +195,9 @@
         <ul>
           <li><b>No Arduino in the list:</b> try another USB cable (some only charge) or another port. Clone boards may need the CH340 driver.</li>
           <li><b>“Failed to open serial port”:</b> close the Arduino IDE Serial Monitor and any other program using the Arduino.</li>
-          <li><b>Servo moves the wrong way:</b> tick or untick “Reverse direction”.</li>
+          <li><b>Servo moves the wrong way:</b> tick or untick “Reverse side direction” or “Reverse up/down direction”.</li>
+          <li><b>One-eye mode does nothing:</b> check the “Eyes:” line under the dials. The closed eye should say “closed”. If your open eye also says “closed”, open it wider or add light.</li>
+          <li><b>Up/down does not move:</b> upload the new <code>eye_servo.ino</code> (it reads “side,up/down”) and press Calibrate again.</li>
           <li><b>Servo twitches or the Arduino keeps disconnecting:</b> power the servo from a separate battery pack or supply, with the grounds joined.</li>
           <li><b>“No face found”:</b> face the camera, add more light, and remove glare from glasses if you can.</li>
         </ul>
