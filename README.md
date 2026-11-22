@@ -21,6 +21,7 @@ Students only open a web page and plug in the Arduino. No Arduino IDE, Python, O
 * **Four-step calibration** – the calibration wizard now asks you to look **left**, **right**, **up** and **down** (about 14 seconds total).
 * **Separate reverse options** – "Reverse side direction" and "Reverse up/down direction" can be toggled independently.
 * **Up/down sensitivity & dead-zone** – a gain slider and built-in dead zone reduce servo wobble on the vertical axis.
+* **Eyelid tracking for up/down (Face Landmarker)** – the up/down servo now also uses Google MediaPipe **Face Landmarker** (eyelid blendshapes `eyeLookUp/Down` + upper/lower lid landmarks), so even a tiny up or down eyeball movement is detected. Yellow eyelid outlines are drawn on the camera picture and a status line under the dials shows what it sees. If it cannot load, the app silently falls back to the old up/down tracking.
 
 > **Note:** After updating the web files, upload `arduino/eye_servo/eye_servo.ino` to your Arduino again — the new sketch reads `"pan,tilt"` instead of a single angle.
 
@@ -70,6 +71,8 @@ Then open <http://localhost:8000> in Chrome or Edge.
 * `arduino/eye_servo/eye_servo.ino`: reads `"pan,tilt"` per line (or just `"pan"` for backward compatibility). Moves both servos smoothly and returns to centre if nothing arrives for 2 seconds. `PAN_RANGE = 30` and `TILT_RANGE = 35` must match `logic.js`.
 * `mediapipe/`: the eye-tracking files, bundled so the site does not depend on another server.
   They come from the npm package `@mediapipe/face_mesh` 0.4.1633559619 (Apache-2.0).
+* `landmarker-assist.js`: **new** – loads MediaPipe Face Landmarker (`@mediapipe/tasks-vision` 0.10.14) and replaces only the up/down value coming out of `EyeLogic.measure()` with an eyelid-based value on the same scale (centre 0.05, span ±0.07), so calibration, gain, dead zone and servo mapping are unchanged. Side (left/right) tracking is untouched. It loads the files from `mediapipe-tasks/` first and from the jsDelivr / Google CDN if they are missing.
+* `mediapipe-tasks/`: Face Landmarker files bundled for offline use (`vision_bundle.mjs`, `wasm/`, `face_landmarker.task`). See *Face Landmarker files* below.
 * `sw.js`: lets the page work offline after the first visit.
 
 ## Troubleshooting
@@ -80,3 +83,20 @@ Then open <http://localhost:8000> in Chrome or Edge.
 * **One-eye mode does nothing**: check the "Eyes:" line under the dials. The closed eye should say "closed". If your open eye also says "closed", open it wider or add light.
 * **Arduino keeps disconnecting or the servo twitches**: power the servos from their own supply, with all grounds joined.
 * **Camera blocked**: click the camera icon in the address bar and allow it.
+* **Up/down still jumps or looks wrong**: under the dials the line *Face Landmarker: active* must be green. If it says *unavailable*, check your internet connection (or that `mediapipe-tasks/` is uploaded) and refresh. Then press **Calibrate** again and look clearly up and down.
+* **Compare with the old up/down tracking**: untick **Use eyelid tracking for up/down** in Settings.
+
+## Face Landmarker files (offline copy)
+The page works without these because it falls back to the CDN, but bundling them makes it faster and fully offline. From the repo folder:
+
+```
+npm pack @mediapipe/tasks-vision@0.10.14
+tar -xzf mediapipe-tasks-vision-0.10.14.tgz
+mkdir -p mediapipe-tasks
+cp package/vision_bundle.mjs mediapipe-tasks/
+cp -r package/wasm mediapipe-tasks/wasm
+curl -L -o mediapipe-tasks/face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+rm -rf package mediapipe-tasks-vision-0.10.14.tgz
+```
+
+Face Landmarker is Apache-2.0, from Google AI Edge MediaPipe.
